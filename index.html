@@ -473,7 +473,7 @@
         };
 
         const SAFE_ZONE_RADIUS_M = 120;
-        const CAMPUS_DRIFT_RADIUS_M = 32;
+        const CAMPUS_DRIFT_RADIUS_M = 6;
 
         let map, userMarker, accuracyCircle, safeZoneCircle, breadcrumbLine;
         let currentTileLayer = null;
@@ -485,13 +485,12 @@
         let alertAudioTimer = null;
         let wasOutsideZone = false;
 
-        // Initial breadcrumb path inside the school campus around 9.13167, 99.330966
+        // Subtle initial breadcrumb path tightly around 9.13167, 99.330966
         let breadcrumbPoints = [
-            [DEFAULT_LAT - 0.00022, DEFAULT_LNG - 0.00018],
-            [DEFAULT_LAT - 0.00016, DEFAULT_LNG - 0.00011],
-            [DEFAULT_LAT - 0.00009, DEFAULT_LNG - 0.00005],
-            [DEFAULT_LAT - 0.00003, DEFAULT_LNG + 0.00004],
-            [DEFAULT_LAT + 0.00002, DEFAULT_LNG + 0.00002],
+            [DEFAULT_LAT - 0.000035, DEFAULT_LNG - 0.000028],
+            [DEFAULT_LAT - 0.000024, DEFAULT_LNG - 0.000018],
+            [DEFAULT_LAT - 0.000014, DEFAULT_LNG - 0.000008],
+            [DEFAULT_LAT - 0.000005, DEFAULT_LNG + 0.000006],
             [DEFAULT_LAT, DEFAULT_LNG]
         ];
 
@@ -580,16 +579,16 @@
             startCampusMotion();
         };
 
-        // Subtle bounded movement within school campus (~32m around anchor)
+        // Very subtle micro-movement within ~6m around anchor
         function startCampusMotion() {
             let angle = Math.random() * Math.PI * 2;
             setInterval(() => {
                 const st = window.userState;
                 if (st.isSOS || st.isFall) return;
 
-                angle += (Math.random() - 0.5) * 1.4;
-                const stepLat = Math.cos(angle) * 0.000045;
-                const stepLng = Math.sin(angle) * 0.000045;
+                angle += (Math.random() - 0.5) * 1.1;
+                const stepLat = Math.cos(angle) * 0.000008;
+                const stepLng = Math.sin(angle) * 0.000008;
 
                 let nextLat = st.lat + stepLat;
                 let nextLng = st.lng + stepLng;
@@ -597,7 +596,7 @@
                 // Keep strictly within CAMPUS_DRIFT_RADIUS_M of DEFAULT_LAT, DEFAULT_LNG
                 const dist = haversineMeters(DEFAULT_LAT, DEFAULT_LNG, nextLat, nextLng);
                 if (dist > CAMPUS_DRIFT_RADIUS_M) {
-                    const ratio = (CAMPUS_DRIFT_RADIUS_M * 0.75) / dist;
+                    const ratio = (CAMPUS_DRIFT_RADIUS_M * 0.7) / dist;
                     nextLat = DEFAULT_LAT + (nextLat - DEFAULT_LAT) * ratio;
                     nextLng = DEFAULT_LNG + (nextLng - DEFAULT_LNG) * ratio;
                     angle += Math.PI * 0.75;
@@ -607,11 +606,11 @@
                 st.lng = nextLng;
 
                 breadcrumbPoints.push([nextLat, nextLng]);
-                if (breadcrumbPoints.length > 24) breadcrumbPoints.shift();
+                if (breadcrumbPoints.length > 16) breadcrumbPoints.shift();
                 if (breadcrumbLine) breadcrumbLine.setLatLngs(breadcrumbPoints);
 
                 window.syncUI();
-            }, 3500);
+            }, 5000);
         }
 
         function haversineMeters(lat1, lon1, lat2, lon2) {
