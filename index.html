@@ -125,7 +125,18 @@
             </div>
         </div>
 
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2.5 sm:gap-3">
+            <!-- Audio Alert Mute/Unmute Toggle -->
+            <button id="sound-toggle-btn" onclick="toggleAudioAlert()" title="Toggle emergency sound alert" class="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-slate-300 transition active:scale-[0.98]">
+                <svg id="sound-icon-on" class="w-3.5 h-3.5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 010 12.728M16.463 8.288a5.25 5.25 0 010 7.424M6.75 8.25l4.72-4.72a.75.75 0 011.28.53v15.88a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75z" />
+                </svg>
+                <svg id="sound-icon-off" class="w-3.5 h-3.5 text-slate-500 hidden" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 9.75L19.5 12m0 0l2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6l4.72-4.72a.75.75 0 011.28.531V19.94a.75.75 0 01-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.01 9.01 0 012.25 12c0-.83.112-1.633.322-2.395C2.806 8.757 3.63 8.25 4.51 8.25H6.75z" />
+                </svg>
+                <span id="sound-label" class="hidden md:inline font-medium">Sound On</span>
+            </button>
+
             <!-- Firebase Live Connectivity Pill -->
             <div id="conn-pill" class="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.08] text-xs">
                 <span id="conn-dot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
@@ -337,6 +348,10 @@
                     <div id="gps-decimal" class="text-sm font-mono font-medium text-white tabular-nums select-all">9.13167, 99.330966</div>
                     <div id="gps-dms" class="text-[11px] font-mono text-slate-400 tabular-nums">9°07'54.0"N 99°19'51.5"E</div>
                 </div>
+                <div class="flex items-center justify-between px-1 text-xs">
+                    <span class="text-slate-400">Safe Zone (120m)</span>
+                    <span id="geofence-status" class="font-medium text-emerald-400">Inside School Area</span>
+                </div>
                 <div class="grid grid-cols-2 gap-2">
                     <a id="directions-link" href="https://www.google.com/maps/dir/?api=1&destination=9.13167,99.330966" target="_blank" rel="noopener"
                        class="px-3 py-2 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] text-xs font-medium text-white flex items-center justify-center gap-1.5 transition active:scale-[0.98]">
@@ -457,26 +472,50 @@
             isFall: false
         };
 
-        let map, userMarker, accuracyCircle;
+        const SAFE_ZONE_RADIUS_M = 120;
+        const CAMPUS_DRIFT_RADIUS_M = 32;
+
+        let map, userMarker, accuracyCircle, safeZoneCircle, breadcrumbLine;
         let currentTileLayer = null;
+        let overlayTileLayers = [];
         let activeLayerKey = "satellite";
         let timelineEvents = [];
+        let soundEnabled = true;
+        let wasAlertActive = false;
+        let alertAudioTimer = null;
+        let wasOutsideZone = false;
+
+        // Initial breadcrumb path inside the school campus around 9.13167, 99.330966
+        let breadcrumbPoints = [
+            [DEFAULT_LAT - 0.00022, DEFAULT_LNG - 0.00018],
+            [DEFAULT_LAT - 0.00016, DEFAULT_LNG - 0.00011],
+            [DEFAULT_LAT - 0.00009, DEFAULT_LNG - 0.00005],
+            [DEFAULT_LAT - 0.00003, DEFAULT_LNG + 0.00004],
+            [DEFAULT_LAT + 0.00002, DEFAULT_LNG + 0.00002],
+            [DEFAULT_LAT, DEFAULT_LNG]
+        ];
 
         const TILE_LAYERS = {
             dark: {
                 url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 options: { maxZoom: 19, attribution: "&copy; OpenStreetMap" },
-                darkFilter: true
+                darkFilter: true,
+                overlays: []
             },
             street: {
                 url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
                 options: { maxZoom: 19, attribution: "&copy; OpenStreetMap" },
-                darkFilter: false
+                darkFilter: false,
+                overlays: []
             },
             satellite: {
                 url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
                 options: { maxZoom: 19, attribution: "&copy; Esri World Imagery" },
-                darkFilter: false
+                darkFilter: false,
+                overlays: [
+                    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
+                    "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+                ]
             }
         };
 
@@ -497,12 +536,32 @@
 
             setMapLayer("satellite");
 
+            // Safe Zone / Geofence perimeter (120m school campus)
+            safeZoneCircle = L.circle([DEFAULT_LAT, DEFAULT_LNG], {
+                radius: SAFE_ZONE_RADIUS_M,
+                color: "#10B981",
+                fillColor: "#10B981",
+                fillOpacity: 0.05,
+                weight: 1.5,
+                dashArray: "6 6"
+            }).addTo(map);
+
+            // Breadcrumb trail inside school campus
+            breadcrumbLine = L.polyline(breadcrumbPoints, {
+                color: "#38BDF8",
+                weight: 3,
+                opacity: 0.85,
+                dashArray: "5 7",
+                lineCap: "round",
+                lineJoin: "round"
+            }).addTo(map);
+
             // Accuracy halo
             accuracyCircle = L.circle([DEFAULT_LAT, DEFAULT_LNG], {
-                radius: 28,
+                radius: 22,
                 color: "#3B82F6",
                 fillColor: "#3B82F6",
-                fillOpacity: 0.12,
+                fillOpacity: 0.14,
                 weight: 1.5
             }).addTo(map);
 
@@ -518,7 +577,54 @@
 
             addTimelineEvent("ระบบพร้อมใช้งาน • กำลังติดตามสถานะอุปกรณ์", "safe");
             window.syncUI();
+            startCampusMotion();
         };
+
+        // Subtle bounded movement within school campus (~32m around anchor)
+        function startCampusMotion() {
+            let angle = Math.random() * Math.PI * 2;
+            setInterval(() => {
+                const st = window.userState;
+                if (st.isSOS || st.isFall) return;
+
+                angle += (Math.random() - 0.5) * 1.4;
+                const stepLat = Math.cos(angle) * 0.000045;
+                const stepLng = Math.sin(angle) * 0.000045;
+
+                let nextLat = st.lat + stepLat;
+                let nextLng = st.lng + stepLng;
+
+                // Keep strictly within CAMPUS_DRIFT_RADIUS_M of DEFAULT_LAT, DEFAULT_LNG
+                const dist = haversineMeters(DEFAULT_LAT, DEFAULT_LNG, nextLat, nextLng);
+                if (dist > CAMPUS_DRIFT_RADIUS_M) {
+                    const ratio = (CAMPUS_DRIFT_RADIUS_M * 0.75) / dist;
+                    nextLat = DEFAULT_LAT + (nextLat - DEFAULT_LAT) * ratio;
+                    nextLng = DEFAULT_LNG + (nextLng - DEFAULT_LNG) * ratio;
+                    angle += Math.PI * 0.75;
+                }
+
+                st.lat = nextLat;
+                st.lng = nextLng;
+
+                breadcrumbPoints.push([nextLat, nextLng]);
+                if (breadcrumbPoints.length > 24) breadcrumbPoints.shift();
+                if (breadcrumbLine) breadcrumbLine.setLatLngs(breadcrumbPoints);
+
+                window.syncUI();
+            }, 3500);
+        }
+
+        function haversineMeters(lat1, lon1, lat2, lon2) {
+            const R = 6371000;
+            const dLat = ((lat2 - lat1) * Math.PI) / 180;
+            const dLon = ((lon2 - lon1) * Math.PI) / 180;
+            const a =
+                Math.sin(dLat / 2) ** 2 +
+                Math.cos((lat1 * Math.PI) / 180) *
+                Math.cos((lat2 * Math.PI) / 180) *
+                Math.sin(dLon / 2) ** 2;
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        }
 
         function createMarkerIcon(isAlert) {
             const ringClass = isAlert ? "pin-ring-danger bg-red-500" : "pin-ring-safe bg-blue-500";
@@ -544,7 +650,14 @@
             const cfg = TILE_LAYERS[key];
 
             if (currentTileLayer) map.removeLayer(currentTileLayer);
+            overlayTileLayers.forEach((l) => map.removeLayer(l));
+            overlayTileLayers = [];
+
             currentTileLayer = L.tileLayer(cfg.url, cfg.options).addTo(map);
+            (cfg.overlays || []).forEach((url) => {
+                const ol = L.tileLayer(url, { maxZoom: 19, opacity: 0.88 }).addTo(map);
+                overlayTileLayers.push(ol);
+            });
 
             const mapEl = document.getElementById("main-map");
             if (cfg.darkFilter) {
@@ -636,8 +749,78 @@
                 badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> SAFE`;
             }
 
+            // Update Geofence status
+            const distFromAnchor = haversineMeters(DEFAULT_LAT, DEFAULT_LNG, st.lat, st.lng);
+            const isOutsideZone = distFromAnchor > SAFE_ZONE_RADIUS_M;
+            const geoEl = document.getElementById("geofence-status");
+            if (geoEl) {
+                if (isOutsideZone) {
+                    geoEl.textContent = "Outside Safe Zone";
+                    geoEl.className = "font-medium text-amber-400";
+                    if (!wasOutsideZone) {
+                        addTimelineEvent("แจ้งเตือน: ออกนอกเขตปลอดภัยโรงเรียน (>120 ม.)", "warning");
+                    }
+                } else {
+                    geoEl.textContent = "Inside School Area";
+                    geoEl.className = "font-medium text-emerald-400";
+                }
+            }
+            wasOutsideZone = isOutsideZone;
+
+            if (safeZoneCircle) {
+                safeZoneCircle.setStyle({
+                    color: isOutsideZone ? "#F59E0B" : "#10B981",
+                    fillColor: isOutsideZone ? "#F59E0B" : "#10B981"
+                });
+            }
+
+            // Audio alert handling on state transition
+            if (isAlert && !wasAlertActive) {
+                playAlertTone();
+                clearInterval(alertAudioTimer);
+                alertAudioTimer = setInterval(() => {
+                    if (window.userState.isSOS || window.userState.isFall) playAlertTone();
+                }, 4000);
+            } else if (!isAlert && wasAlertActive) {
+                clearInterval(alertAudioTimer);
+                alertAudioTimer = null;
+            }
+            wasAlertActive = isAlert;
+
             document.getElementById("last-sync-time").textContent = "Synced " + new Date().toLocaleTimeString("th-TH");
         };
+
+        window.toggleAudioAlert = function () {
+            soundEnabled = !soundEnabled;
+            document.getElementById("sound-icon-on").classList.toggle("hidden", !soundEnabled);
+            document.getElementById("sound-icon-off").classList.toggle("hidden", soundEnabled);
+            document.getElementById("sound-label").textContent = soundEnabled ? "Sound On" : "Muted";
+            showToast(soundEnabled ? "เปิดเสียงแจ้งเตือนฉุกเฉินแล้ว" : "ปิดเสียงแจ้งเตือนชั่วคราว", "info");
+        };
+
+        function playAlertTone() {
+            if (!soundEnabled) return;
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                const ctx = new AudioCtx();
+                [880, 660, 880].forEach((freq, idx) => {
+                    const osc = ctx.createOscillator();
+                    const gain = ctx.createGain();
+                    osc.type = "sine";
+                    osc.frequency.value = freq;
+                    gain.gain.setValueAtTime(0.001, ctx.currentTime + idx * 0.16);
+                    gain.gain.exponentialRampToValueAtTime(0.14, ctx.currentTime + idx * 0.16 + 0.03);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + idx * 0.16 + 0.14);
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.start(ctx.currentTime + idx * 0.16);
+                    osc.stop(ctx.currentTime + idx * 0.16 + 0.15);
+                });
+            } catch (e) {
+                // Browser autoplay policy may block until user interaction
+            }
+        }
 
         function formatDMS(lat, lng) {
             const toDMS = (val, pos, neg) => {
